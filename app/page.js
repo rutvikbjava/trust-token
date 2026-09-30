@@ -1,361 +1,163 @@
 'use client';
+import { useState, useEffect } from 'react';
 
-import { useEffect, useState } from 'react';
+/*
+DEMO SCRIPT:
+1. Click "Register Device" - note device_id and secret (stored automatically)
+2. Click "Simulate Good" - enter device_id, trust increases to ~65, token issued
+3. Click "Simulate Attacker" - trust drops, device gets blocked (trust < 20)
+4. Click "Tamper Block" - modifies middle block data
+5. Click "Verify Chain" - shows "Chain broken at #N"
+6. Click "Reset" - clears all data, starts fresh with genesis block
+7. Use "Get Token" on any active device to issue a token manually
+8. Use "Verify Token" to check token validity and expiration
+*/
+
+async function hmac(key, msg) {
+  const enc = new TextEncoder();
+  const k = await crypto.subtle.importKey('raw', enc.encode(key), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+  const sig = await crypto.subtle.sign('HMAC', k, enc.encode(msg));
+  return Array.from(new Uint8Array(sig)).map(b => b.toString(16).padStart(2, '0')).join('');
+}
 
 export default function Dashboard() {
   const [devices, setDevices] = useState([]);
   const [blocks, setBlocks] = useState([]);
-  const [message, setMessage] = useState('');
-  const [loading, setLoading] = useState(true);
+  const [integrity, setIntegrity] = useState({ valid: true });
+  const [token, setToken] = useState('');
+  const [verifyResult, setVerifyResult] = useState(null);
+  const [secrets, setSecrets] = useState({});
 
   useEffect(() => {
-    loadData();
+    const load = async () => {
+      const [d, c] = await Promise.all([fetch('/api/devices').then(r => r.json()), fetch('/api/chain').then(r => r.json())]);
+      setDevices(d.devices || []);
+      setBlocks(c.blocks || []);
+      setIntegrity(c.integrity || { valid: true });
+    };
+    load();
+    const int = setInterval(load, 3000);
+    return () => clearInterval(int);
   }, []);
 
-  async function loadData() {
-    setLoading(true);
-    try {
-      const [devicesRes, ledgerRes] = await Promise.all([
-        fetch('/api/devices'),
-        fetch('/api/ledger')
-      ]);
+  const register = async () => {
+    const r = await fetch('/api/register', { method: 'POST' }).then(r => r.json());
+    alert(`Device: ${r.device_id}\nSecret: ${r.secret}\n\nSave the secret!`);
+    setSecrets({ ...secrets, [r.device_id]: r.secret });
+  };
 
-      const devicesData = await devicesRes.json();
-      const ledgerData = await ledgerRes.json();
-
-      setDevices(devicesData.devices || []);
-      setBlocks(ledgerData.blocks || []);
-    } catch (err) {
-      setMessage(`Error loading data: ${err.message}`);
-    } finally {
-      setLoading(false);
+  const simulate = async (mode, badSig = false) => {
+    const id = prompt('Device ID:');
+    if (!id || !secrets[id]) return alert('Device not found or secret missing');
+    for (let i = 0; i < (mode === 'good' ? 3 : 5); i++) {
+      const ts = Date.now();
+      const nonce = Math.random().toString(36);
+      const sig = badSig ? 'badsig' : await hmac(secrets[id], `${id}${ts}${nonce}`);
+      await fetch('/api/auth', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ device_id: id, ts, nonce, sig }) });
     }
-  }
+  };
 
-  async function registerDevice() {
-    try {
-      const res = await fetch('/api/register', { method: 'POST' });
-      const data = await res.json();
+  const getToken = async (id) => {
+    if (!secrets[id]) return alert('Secret not found');
+    const ts = Date.now();
+    const nonce = Math.random().toString(36);
+    const sig = await hmac(secrets[id], `${id}${ts}${nonce}`);
+    const r = await fetch('/api/auth', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ device_id: id, ts, nonce, sig }) }).then(r => r.json());
+    if (r.token) setToken(r.token);
+  };
 
-      if (data.device_id) {
-        alert(`Device registered!\n\nDevice ID: ${data.device_id}\n\nSecret: ${data.secret}\n\n⚠️ Save this secret! It won't be shown again.`);
-        setMessage(`Device ${data.device_id} registered successfully`);
-        loadData();
-      } else {
-        setMessage(`Error: ${data.error || 'Registration failed'}`);
-      }
-    } catch (err) {
-      setMessage(`Error: ${err.message}`);
+  const verifyTok = async () => {
+    const r = await fetch('/api/verify', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token }) }).then(r => r.json());
+    setVerifyResult(r);
+  };
+
+  const revoke = async (id) => {
+    await fetch('/api/revoke', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ device_id: id }) });
+  };
+
+  const verifyChain = async () => {
+    const r = await fetch('/api/chain').then(r => r.json());
+    alert(r.integrity.valid ? '✅ Chain valid' : `❌ Broken at block ${r.integrity.brokenAt}`);
+  };
+
+  const tamper = async () => {
+    await fetch('/api/tamper', { method: 'POST' });
+  };
+
+  const reset = async () => {
+    if (confirm('Delete all data?')) {
+      await fetch('/api/reset', { method: 'POST' });
+      setSecrets({});
     }
-  }
-
-  async function simulateDevice(mode) {
-    const device_id = prompt(`Enter device ID to simulate ${mode} behavior:`);
-    if (!device_id) return;
-
-    try {
-      setMessage(`Simulating ${mode} device...`);
-      const res = await fetch('/api/simulate', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ device_id, mode })
-      });
-
-      const data = await res.json();
-
-      if (data.success) {
-        setMessage(`Simulation complete: ${data.results.length} attempts`);
-        loadData();
-      } else {
-        setMessage(`Error: ${data.message}`);
-      }
-    } catch (err) {
-      setMessage(`Error: ${err.message}`);
-    }
-  }
-
-  async function revokeDevice() {
-    const device_id = prompt('Enter device ID to revoke:');
-    if (!device_id) return;
-
-    try {
-      const res = await fetch('/api/revoke', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ device_id })
-      });
-
-      const data = await res.json();
-      setMessage(data.message);
-      loadData();
-    } catch (err) {
-      setMessage(`Error: ${err.message}`);
-    }
-  }
-
-  async function verifyChain() {
-    try {
-      setMessage('Verifying blockchain integrity...');
-      const res = await fetch('/api/integrity');
-      const data = await res.json();
-
-      if (data.valid) {
-        setMessage('✅ Blockchain integrity verified - all blocks valid!');
-      } else {
-        setMessage(`❌ Integrity check failed: ${data.message}`);
-      }
-    } catch (err) {
-      setMessage(`Error: ${err.message}`);
-    }
-  }
-
-  async function tamperBlock() {
-    const idx = prompt('Enter block index to tamper with:');
-    if (idx === null) return;
-
-    try {
-      const res = await fetch('/api/tamper', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ idx: parseInt(idx) })
-      });
-
-      const data = await res.json();
-      setMessage(data.message);
-      loadData();
-    } catch (err) {
-      setMessage(`Error: ${err.message}`);
-    }
-  }
-
-  function getTrustColor(trust) {
-    if (trust >= 70) return '#22c55e';
-    if (trust >= 40) return '#eab308';
-    return '#ef4444';
-  }
-
-  if (loading) {
-    return (
-      <div style={{ padding: '20px', textAlign: 'center' }}>
-        <h1>Loading...</h1>
-      </div>
-    );
-  }
+  };
 
   return (
-    <div style={{ maxWidth: '1400px', margin: '0 auto', padding: '20px' }}>
-      <h1 style={{ color: '#1f2937', marginBottom: '10px' }}>
-        🔐 Blockchain IoT Authentication Dashboard
-      </h1>
-      <p style={{ color: '#6b7280', marginBottom: '30px' }}>
-        Dynamic trust tokens for IoT device authentication
-      </p>
-
-      {/* Actions */}
-      <div style={{ marginBottom: '30px', display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
-        <button onClick={registerDevice} style={buttonStyle}>
-          ➕ Register Device
-        </button>
-        <button onClick={() => simulateDevice('good')} style={{ ...buttonStyle, backgroundColor: '#22c55e' }}>
-          ✅ Simulate Good Device
-        </button>
-        <button onClick={() => simulateDevice('attacker')} style={{ ...buttonStyle, backgroundColor: '#ef4444' }}>
-          ⚠️ Simulate Attacker
-        </button>
-        <button onClick={revokeDevice} style={{ ...buttonStyle, backgroundColor: '#dc2626' }}>
-          🚫 Revoke Device
-        </button>
-        <button onClick={verifyChain} style={{ ...buttonStyle, backgroundColor: '#3b82f6' }}>
-          🔍 Verify Chain
-        </button>
-        <button onClick={tamperBlock} style={{ ...buttonStyle, backgroundColor: '#f59e0b' }}>
-          🔨 Tamper Block (Demo)
-        </button>
+    <div style={{ padding: 20, maxWidth: 1400, margin: '0 auto' }}>
+      <h1>IoT Blockchain Auth</h1>
+      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 20 }}>
+        <button onClick={register} style={btn}>Register Device</button>
+        <button onClick={() => simulate('good')} style={btn}>Simulate Good</button>
+        <button onClick={() => simulate('bad', true)} style={btn}>Simulate Attacker</button>
+        <button onClick={verifyChain} style={btn}>Verify Chain</button>
+        <button onClick={tamper} style={btn}>Tamper Block</button>
+        <button onClick={reset} style={btn}>Reset</button>
       </div>
 
-      {/* Message */}
-      {message && (
-        <div style={{
-          padding: '15px',
-          backgroundColor: '#eff6ff',
-          border: '1px solid #3b82f6',
-          borderRadius: '8px',
-          marginBottom: '20px',
-          color: '#1e40af'
-        }}>
-          {message}
+      {!integrity.valid && <div style={{ padding: 10, background: '#fee', color: '#c00', marginBottom: 20, borderRadius: 4 }}>❌ Chain broken at block {integrity.brokenAt}</div>}
+      {integrity.valid && <div style={{ padding: 10, background: '#efe', color: '#060', marginBottom: 20, borderRadius: 4 }}>✅ Chain valid</div>}
+
+      <h2>Devices</h2>
+      <table style={table}>
+        <thead><tr><th>ID</th><th>Trust</th><th>Status</th><th>Actions</th></tr></thead>
+        <tbody>
+          {devices.map(d => (
+            <tr key={d.device_id}>
+              <td><code>{d.device_id}</code></td>
+              <td>
+                <div style={{ width: 100, height: 20, background: '#ddd', borderRadius: 4, overflow: 'hidden' }}>
+                  <div style={{ width: d.trust + '%', height: '100%', background: d.trust >= 70 ? '#4a4' : d.trust >= 40 ? '#da4' : '#d44' }}></div>
+                </div>
+                {d.trust}
+              </td>
+              <td style={{ color: d.status === 'active' ? '#4a4' : '#d44' }}>{d.status}</td>
+              <td>
+                <button onClick={() => getToken(d.device_id)} style={btnSm}>Get Token</button>
+                <button onClick={() => revoke(d.device_id)} style={btnSm}>Revoke</button>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+
+      {token && (
+        <div style={{ marginTop: 20, padding: 15, background: '#fff', borderRadius: 4 }}>
+          <h3>Token</h3>
+          <code style={{ display: 'block', wordBreak: 'break-all', fontSize: 12, marginBottom: 10 }}>{token}</code>
+          <button onClick={verifyTok} style={btn}>Verify Token</button>
+          {verifyResult && <div style={{ marginTop: 10 }}>{verifyResult.valid ? `✅ Valid (trust: ${verifyResult.trust})` : '❌ Invalid'}</div>}
         </div>
       )}
 
-      {/* Devices Table */}
-      <div style={{ marginBottom: '40px' }}>
-        <h2 style={{ color: '#1f2937', marginBottom: '15px' }}>📱 Devices ({devices.length})</h2>
-        <div style={{ overflowX: 'auto', backgroundColor: 'white', borderRadius: '8px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-            <thead>
-              <tr style={{ backgroundColor: '#f9fafb', borderBottom: '2px solid #e5e7eb' }}>
-                <th style={thStyle}>Device ID</th>
-                <th style={thStyle}>Trust Score</th>
-                <th style={thStyle}>Status</th>
-                <th style={thStyle}>Last Auth</th>
-                <th style={thStyle}>Created</th>
-              </tr>
-            </thead>
-            <tbody>
-              {devices.length === 0 ? (
-                <tr>
-                  <td colSpan={5} style={{ ...tdStyle, textAlign: 'center', color: '#9ca3af' }}>
-                    No devices registered yet
-                  </td>
-                </tr>
-              ) : (
-                devices.map((device) => (
-                  <tr key={device.device_id} style={{ borderBottom: '1px solid #e5e7eb' }}>
-                    <td style={tdStyle}>
-                      <code style={{ fontSize: '13px' }}>{device.device_id}</code>
-                    </td>
-                    <td style={tdStyle}>
-                      <span style={{
-                        display: 'inline-block',
-                        padding: '4px 12px',
-                        borderRadius: '12px',
-                        fontWeight: '600',
-                        backgroundColor: getTrustColor(device.trust_score) + '20',
-                        color: getTrustColor(device.trust_score)
-                      }}>
-                        {device.trust_score}
-                      </span>
-                    </td>
-                    <td style={tdStyle}>
-                      {device.is_revoked ? (
-                        <span style={{ color: '#dc2626', fontWeight: '600' }}>🚫 Revoked</span>
-                      ) : (
-                        <span style={{ color: '#22c55e', fontWeight: '600' }}>✅ Active</span>
-                      )}
-                    </td>
-                    <td style={tdStyle}>
-                      {device.last_auth_at ? new Date(device.last_auth_at).toLocaleString() : 'Never'}
-                    </td>
-                    <td style={tdStyle}>
-                      {new Date(device.created_at).toLocaleString()}
-                    </td>
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-      {/* Blockchain Ledger */}
-      <div>
-        <h2 style={{ color: '#1f2937', marginBottom: '15px' }}>⛓️ Blockchain Ledger ({blocks.length} blocks)</h2>
-        <div style={{ overflowX: 'auto', backgroundColor: 'white', borderRadius: '8px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-            <thead>
-              <tr style={{ backgroundColor: '#f9fafb', borderBottom: '2px solid #e5e7eb' }}>
-                <th style={thStyle}>Index</th>
-                <th style={thStyle}>Timestamp</th>
-                <th style={thStyle}>Event</th>
-                <th style={thStyle}>Device ID</th>
-                <th style={thStyle}>Data</th>
-                <th style={thStyle}>Hash</th>
-              </tr>
-            </thead>
-            <tbody>
-              {blocks.length === 0 ? (
-                <tr>
-                  <td colSpan={6} style={{ ...tdStyle, textAlign: 'center', color: '#9ca3af' }}>
-                    No blocks yet
-                  </td>
-                </tr>
-              ) : (
-                blocks.map((block) => (
-                  <tr key={block.idx} style={{ borderBottom: '1px solid #e5e7eb' }}>
-                    <td style={tdStyle}>
-                      <strong>{block.idx}</strong>
-                    </td>
-                    <td style={tdStyle}>
-                      {new Date(block.timestamp).toLocaleString()}
-                    </td>
-                    <td style={tdStyle}>
-                      <span style={getEventBadgeStyle(block.event)}>
-                        {block.event}
-                      </span>
-                    </td>
-                    <td style={tdStyle}>
-                      <code style={{ fontSize: '12px' }}>{block.device_id}</code>
-                    </td>
-                    <td style={tdStyle}>
-                      <code style={{ fontSize: '11px', color: '#6b7280' }}>
-                        {typeof block.data === 'string' ? block.data.substring(0, 50) : JSON.stringify(block.data).substring(0, 50)}
-                      </code>
-                    </td>
-                    <td style={tdStyle}>
-                      <code style={{ fontSize: '11px', color: '#6b7280' }}>
-                        {block.hash.substring(0, 16)}...
-                      </code>
-                    </td>
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
-      </div>
+      <h2 style={{ marginTop: 30 }}>Ledger</h2>
+      <table style={table}>
+        <thead><tr><th>Idx</th><th>Event</th><th>Device</th><th>Hash</th><th>Prev</th></tr></thead>
+        <tbody>
+          {blocks.map(b => (
+            <tr key={b.idx}>
+              <td>{b.idx}</td>
+              <td>{b.event}</td>
+              <td><code>{b.device_id?.slice(0, 8)}</code></td>
+              <td><code>{b.hash?.slice(0, 12)}</code></td>
+              <td><code>{b.prev_hash?.slice(0, 12)}</code></td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   );
 }
 
-const buttonStyle = {
-  padding: '10px 20px',
-  backgroundColor: '#3b82f6',
-  color: 'white',
-  border: 'none',
-  borderRadius: '6px',
-  cursor: 'pointer',
-  fontSize: '14px',
-  fontWeight: '600',
-  transition: 'all 0.2s'
-};
+const btn = { padding: '8px 16px', background: '#3b82f6', color: '#fff', border: 0, borderRadius: 4, cursor: 'pointer' };
+const btnSm = { padding: '4px 8px', background: '#3b82f6', color: '#fff', border: 0, borderRadius: 4, cursor: 'pointer', fontSize: 12, marginRight: 5 };
+const table = { width: '100%', borderCollapse: 'collapse', background: '#fff', borderRadius: 4, overflow: 'hidden' };
 
-const thStyle = {
-  padding: '12px',
-  textAlign: 'left',
-  fontSize: '14px',
-  fontWeight: '600',
-  color: '#374151'
-};
-
-const tdStyle = {
-  padding: '12px',
-  fontSize: '14px',
-  color: '#1f2937'
-};
-
-function getEventBadgeStyle(event) {
-  const baseStyle = {
-    display: 'inline-block',
-    padding: '4px 8px',
-    borderRadius: '4px',
-    fontSize: '12px',
-    fontWeight: '600'
-  };
-
-  const colors = {
-    REGISTER: { bg: '#dbeafe', color: '#1e40af' },
-    AUTH_SUCCESS: { bg: '#dcfce7', color: '#166534' },
-    AUTH_FAIL: { bg: '#fee2e2', color: '#991b1b' },
-    TOKEN_ISSUED: { bg: '#e0e7ff', color: '#3730a3' },
-    REVOKE: { bg: '#fef3c7', color: '#92400e' },
-    GENESIS: { bg: '#f3e8ff', color: '#6b21a8' }
-  };
-
-  const color = colors[event] || { bg: '#f3f4f6', color: '#374151' };
-
-  return {
-    ...baseStyle,
-    backgroundColor: color.bg,
-    color: color.color
-  };
-}
