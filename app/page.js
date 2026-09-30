@@ -30,10 +30,19 @@ export default function Dashboard() {
 
   useEffect(() => {
     const load = async () => {
-      const [d, c] = await Promise.all([fetch('/api/devices').then(r => r.json()), fetch('/api/chain').then(r => r.json())]);
-      setDevices(d.devices || []);
-      setBlocks(c.blocks || []);
-      setIntegrity(c.integrity || { valid: true });
+      try {
+        const [d, c] = await Promise.all([
+          fetch('/api/devices').then(r => r.json()),
+          fetch('/api/chain').then(r => r.json())
+        ]);
+        if (d.error) console.error('Devices error:', d.error);
+        if (c.error) console.error('Chain error:', c.error);
+        setDevices(d.devices || []);
+        setBlocks(c.blocks || []);
+        setIntegrity(c.integrity || { valid: true, brokenAt: null });
+      } catch (err) {
+        console.error('Load error:', err);
+      }
     };
     load();
     const int = setInterval(load, 3000);
@@ -41,29 +50,44 @@ export default function Dashboard() {
   }, []);
 
   const register = async () => {
-    const r = await fetch('/api/register', { method: 'POST' }).then(r => r.json());
-    alert(`Device: ${r.device_id}\nSecret: ${r.secret}\n\nSave the secret!`);
-    setSecrets({ ...secrets, [r.device_id]: r.secret });
+    try {
+      const r = await fetch('/api/register', { method: 'POST' }).then(r => r.json());
+      if (r.error) return alert(`Error: ${r.error}`);
+      alert(`Device: ${r.device_id}\nSecret: ${r.secret}\n\nSave the secret!`);
+      setSecrets({ ...secrets, [r.device_id]: r.secret });
+    } catch (err) {
+      alert(`Error: ${err.message}`);
+    }
   };
 
   const simulate = async (mode, badSig = false) => {
     const id = prompt('Device ID:');
     if (!id || !secrets[id]) return alert('Device not found or secret missing');
-    for (let i = 0; i < (mode === 'good' ? 3 : 5); i++) {
-      const ts = Date.now();
-      const nonce = Math.random().toString(36);
-      const sig = badSig ? 'badsig' : await hmac(secrets[id], `${id}${ts}${nonce}`);
-      await fetch('/api/auth', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ device_id: id, ts, nonce, sig }) });
+    try {
+      for (let i = 0; i < (mode === 'good' ? 3 : 5); i++) {
+        const ts = Date.now();
+        const nonce = Math.random().toString(36);
+        const sig = badSig ? 'badsig' : await hmac(secrets[id], `${id}${ts}${nonce}`);
+        const r = await fetch('/api/auth', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ device_id: id, ts, nonce, sig }) }).then(r => r.json());
+        if (r.error && i === 0) alert(`Error: ${r.error}`);
+      }
+    } catch (err) {
+      alert(`Error: ${err.message}`);
     }
   };
 
   const getToken = async (id) => {
     if (!secrets[id]) return alert('Secret not found');
-    const ts = Date.now();
-    const nonce = Math.random().toString(36);
-    const sig = await hmac(secrets[id], `${id}${ts}${nonce}`);
-    const r = await fetch('/api/auth', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ device_id: id, ts, nonce, sig }) }).then(r => r.json());
-    if (r.token) setToken(r.token);
+    try {
+      const ts = Date.now();
+      const nonce = Math.random().toString(36);
+      const sig = await hmac(secrets[id], `${id}${ts}${nonce}`);
+      const r = await fetch('/api/auth', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ device_id: id, ts, nonce, sig }) }).then(r => r.json());
+      if (r.error) return alert(`Error: ${r.error}`);
+      if (r.token) setToken(r.token);
+    } catch (err) {
+      alert(`Error: ${err.message}`);
+    }
   };
 
   const verifyTok = async () => {
@@ -76,8 +100,15 @@ export default function Dashboard() {
   };
 
   const verifyChain = async () => {
-    const r = await fetch('/api/chain').then(r => r.json());
-    alert(r.integrity.valid ? '✅ Chain valid' : `❌ Broken at block ${r.integrity.brokenAt}`);
+    try {
+      const r = await fetch('/api/chain').then(r => r.json());
+      if (r.error) return alert(`Error: ${r.error}`);
+      const valid = r.integrity?.valid;
+      const broken = r.integrity?.brokenAt;
+      alert(valid ? '✅ Chain valid' : `❌ Broken at block ${broken}`);
+    } catch (err) {
+      alert(`Error: ${err.message}`);
+    }
   };
 
   const tamper = async () => {
@@ -103,8 +134,16 @@ export default function Dashboard() {
         <button onClick={reset} style={btn}>Reset</button>
       </div>
 
-      {!integrity.valid && <div style={{ padding: 10, background: '#fee', color: '#c00', marginBottom: 20, borderRadius: 4 }}>❌ Chain broken at block {integrity.brokenAt}</div>}
-      {integrity.valid && <div style={{ padding: 10, background: '#efe', color: '#060', marginBottom: 20, borderRadius: 4 }}>✅ Chain valid</div>}
+      {!integrity?.valid && integrity?.brokenAt !== null && (
+        <div style={{ padding: 10, background: '#fee', color: '#c00', marginBottom: 20, borderRadius: 4 }}>
+          ❌ Chain broken at block {integrity.brokenAt}
+        </div>
+      )}
+      {integrity?.valid && (
+        <div style={{ padding: 10, background: '#efe', color: '#060', marginBottom: 20, borderRadius: 4 }}>
+          ✅ Chain valid
+        </div>
+      )}
 
       <h2>Devices</h2>
       <table style={table}>
