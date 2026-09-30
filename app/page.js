@@ -154,9 +154,9 @@ export default function Dashboard() {
               <td><code>{d.device_id}</code></td>
               <td>
                 <div style={{ width: 100, height: 20, background: '#ddd', borderRadius: 4, overflow: 'hidden' }}>
-                  <div style={{ width: d.trust + '%', height: '100%', background: d.trust >= 70 ? '#4a4' : d.trust >= 40 ? '#da4' : '#d44' }}></div>
+                  <div style={{ width: d.trust_score + '%', height: '100%', background: d.trust_score >= 70 ? '#4a4' : d.trust_score >= 40 ? '#da4' : '#d44' }}></div>
                 </div>
-                {d.trust}
+                {d.trust_score}
               </td>
               <td style={{ color: d.status === 'active' ? '#4a4' : '#d44' }}>{d.status}</td>
               <td>
