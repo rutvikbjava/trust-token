@@ -13,11 +13,19 @@ DEMO SCRIPT:
 8. Use "Verify Token" to check token validity and expiration
 */
 
-async function hmac(key, msg) {
-  const enc = new TextEncoder();
-  const k = await crypto.subtle.importKey('raw', enc.encode(key), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
-  const sig = await crypto.subtle.sign('HMAC', k, enc.encode(msg));
-  return Array.from(new Uint8Array(sig)).map(b => b.toString(16).padStart(2, '0')).join('');
+const enc = new TextEncoder();
+const hex = (buf) => [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, '0')).join('');
+
+async function signAuth(device_id, secret) {
+  // Key = SHA256(secret) as hex string, used as UTF-8
+  const keyHex = hex(await crypto.subtle.digest('SHA-256', enc.encode(secret)));
+  const key = await crypto.subtle.importKey('raw', enc.encode(keyHex),
+    { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+  const ts = Date.now();
+  const nonce = crypto.randomUUID();
+  const msg = `${device_id}${ts}${nonce}`;
+  const sig = hex(await crypto.subtle.sign('HMAC', key, enc.encode(msg)));
+  return { device_id, ts, nonce, sig };
 }
 
 export default function Dashboard() {
@@ -65,10 +73,20 @@ export default function Dashboard() {
     if (!id || !secrets[id]) return alert('Device not found or secret missing');
     try {
       for (let i = 0; i < (mode === 'good' ? 3 : 5); i++) {
-        const ts = Date.now();
-        const nonce = Math.random().toString(36);
-        const sig = badSig ? 'badsig' : await hmac(secrets[id], `${id}${ts}${nonce}`);
-        const r = await fetch('/api/auth', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ device_id: id, ts, nonce, sig }) }).then(r => r.json());
+        let authData;
+        if (badSig) {
+          // Wrong key for attacker simulation
+          const ts = Date.now();
+          const nonce = crypto.randomUUID();
+          authData = { device_id: id, ts, nonce, sig: 'invalid_signature_' + i };
+        } else {
+          authData = await signAuth(id, secrets[id]);
+        }
+        const r = await fetch('/api/auth', { 
+          method: 'POST', 
+          headers: { 'Content-Type': 'application/json' }, 
+          body: JSON.stringify(authData) 
+        }).then(r => r.json());
         if (r.error && i === 0) alert(`Error: ${r.error}`);
       }
     } catch (err) {
@@ -79,10 +97,12 @@ export default function Dashboard() {
   const getToken = async (id) => {
     if (!secrets[id]) return alert('Secret not found');
     try {
-      const ts = Date.now();
-      const nonce = Math.random().toString(36);
-      const sig = await hmac(secrets[id], `${id}${ts}${nonce}`);
-      const r = await fetch('/api/auth', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ device_id: id, ts, nonce, sig }) }).then(r => r.json());
+      const authData = await signAuth(id, secrets[id]);
+      const r = await fetch('/api/auth', { 
+        method: 'POST', 
+        headers: { 'Content-Type': 'application/json' }, 
+        body: JSON.stringify(authData) 
+      }).then(r => r.json());
       if (r.error) return alert(`Error: ${r.error}`);
       if (r.token) setToken(r.token);
     } catch (err) {
