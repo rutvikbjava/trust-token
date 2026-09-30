@@ -8,23 +8,28 @@ Lightweight blockchain-based authentication framework for IoT devices using dyna
 ### FR1: Device Registration
 - Generate unique `device_id` and secret key
 - Return secret once (never stored in plaintext)
-- Store hashed secret in database
-- Log REGISTER event to blockchain
+- Compute secret_hash = SHA256(secret) and store in database
+- Device will use SHA256(secret) as HMAC key (equals server's secret_hash)
+- Log REGISTER event to blockchain with epoch ms timestamp
 
 ### FR2: Blockchain Ledger
 - Immutable append-only log in Supabase
-- Each block contains: idx, timestamp, event, device_id, data (JSON), prev_hash, hash
-- Hash = SHA256(idx + timestamp + event + device_id + data + prev_hash)
+- Each block contains: idx (BIGINT), ts (epoch ms), event, device_id, data (TEXT JSON string), prev_hash, hash
+- Hash = SHA256(idx + ts + event + device_id + data + prev_hash)
+  - All values concatenated as strings
+  - data is stored TEXT value as-is for hash stability
 - Event types: REGISTER, AUTH_SUCCESS, AUTH_FAIL, TOKEN_ISSUED, REVOKE
 
 ### FR3: Device Authentication
-- Device sends: device_id, timestamp, nonce, hmac
-- HMAC = HMAC-SHA256(secret, device_id + timestamp + nonce)
+- Device sends: device_id, timestamp (epoch ms), nonce, hmac
+- Device computes: key = SHA256(secret), hmac = HMAC-SHA256(key, device_id + timestamp + nonce)
 - Server validates:
-  - HMAC signature
-  - Timestamp freshness (max 60 seconds old)
+  - Fetches secret_hash from database (equals device's key)
+  - Computes expected_hmac = HMAC-SHA256(secret_hash, device_id + timestamp + nonce)
+  - HMAC signature matches
+  - Timestamp freshness (max 60 seconds old, epoch ms)
   - Nonce uniqueness (no replay attacks)
-- Log AUTH_SUCCESS or AUTH_FAIL to blockchain
+- Log AUTH_SUCCESS or AUTH_FAIL to blockchain with epoch ms
 
 ### FR4: Dynamic Trust Score
 - Range: 0-100, initial value: 50
@@ -52,7 +57,8 @@ Lightweight blockchain-based authentication framework for IoT devices using dyna
 
 ### FR7: Device Revocation
 - Admin can revoke device access
-- Log REVOKE event to blockchain
+- Sets status = 'revoked' in devices table
+- Log REVOKE event to blockchain with epoch ms
 - Invalidate all tokens for device
 
 ### FR8: Ledger Integrity Check
@@ -61,8 +67,8 @@ Lightweight blockchain-based authentication framework for IoT devices using dyna
 - Validates entire blockchain integrity
 
 ### FR9: Dashboard UI
-- Display all devices with trust scores
-- Display blockchain ledger (newest first)
+- Display all devices with trust scores and status ('active', 'blocked', 'revoked')
+- Display blockchain ledger (newest first) with formatted timestamps
 - Actions:
   - Register new device
   - Simulate good device (multiple successful auths)
@@ -79,10 +85,11 @@ Lightweight blockchain-based authentication framework for IoT devices using dyna
 - No server-side state (stateless functions)
 
 ### NFR2: Security
-- Secrets never stored in plaintext
+- Secrets never stored in plaintext (stored as SHA256 hash)
+- Device signs with SHA256(secret), server validates with secret_hash
 - HMAC-SHA256 for authentication
-- Nonce prevents replay attacks
-- Timestamp prevents stale requests
+- Nonce prevents replay attacks (stored with epoch ms)
+- Timestamp prevents stale requests (epoch ms, 60s window)
 
 ### NFR3: Technology Constraints
 - Next.js App Router (JavaScript only)

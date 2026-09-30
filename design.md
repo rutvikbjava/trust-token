@@ -37,31 +37,51 @@
 ### Table: devices
 ```sql
 - device_id (TEXT, PK)
-- secret_hash (TEXT) - SHA256(secret)
-- trust_score (INTEGER, default 50)
-- is_revoked (BOOLEAN, default false)
-- last_auth_at (TIMESTAMPTZ)
+- secret_hash (TEXT) - SHA256(secret) - devices sign with this key
+- trust_score (INTEGER, default 50, 0-100)
+- status (TEXT, default 'active') - 'active' | 'blocked' | 'revoked'
+- last_auth_at (BIGINT) - epoch milliseconds
 - created_at (TIMESTAMPTZ)
 ```
 
 ### Table: blockchain
 ```sql
-- idx (SERIAL, PK)
-- timestamp (TIMESTAMPTZ)
+- idx (BIGINT, PK) - manually assigned, prevents forks
+- ts (BIGINT) - epoch milliseconds
 - event (TEXT) - REGISTER, AUTH_SUCCESS, AUTH_FAIL, TOKEN_ISSUED, REVOKE
 - device_id (TEXT)
-- data (JSONB)
+- data (TEXT) - JSON string, stored as-is for hash stability
 - prev_hash (TEXT)
-- hash (TEXT)
+- hash (TEXT) - SHA256(idx + ts + event + device_id + data + prev_hash)
 ```
 
 ### Table: nonces
 ```sql
 - device_id (TEXT)
 - nonce (TEXT)
-- used_at (TIMESTAMPTZ)
+- used_at (BIGINT) - epoch milliseconds
 - PRIMARY KEY (device_id, nonce)
 - Index on used_at for cleanup
+```
+
+## Key Crypto Details
+
+### Device Key Derivation
+```
+1. Server generates random secret (32 bytes)
+2. Server computes: secret_hash = SHA256(secret)
+3. Server stores secret_hash in database
+4. Device receives secret once
+5. Device signs with: key = SHA256(secret) = secret_hash
+6. Server validates HMAC using stored secret_hash
+```
+
+### Block Hash Computation
+```
+Hash = SHA256(idx + ts + event + device_id + data + prev_hash)
+- All values concatenated as strings
+- data is the stored TEXT value as-is (JSON string)
+- No separators between fields
 ```
 
 ## Core Modules (lib/core.js)
@@ -77,15 +97,20 @@
 ### 2. Blockchain Functions
 ```javascript
 // addBlock(supabase, event, device_id, data)
-//   1. Get last block's hash
-//   2. Create new block with prev_hash
-//   3. Compute hash = SHA256(idx+timestamp+event+device_id+data+prev_hash)
-//   4. Insert into blockchain table
+//   1. Get last block (highest idx)
+//   2. Compute new idx = last_idx + 1
+//   3. Get current timestamp (epoch ms)
+//   4. Convert data object to JSON string
+//   5. Get prev_hash from last block
+//   6. Compute hash = SHA256(idx + ts + event + device_id + dataStr + prev_hash)
+//   7. Insert block with all fields
 
 // verifyChain(supabase)
 //   1. Fetch all blocks ordered by idx
-//   2. Recompute each hash and check prev_hash link
-//   3. Return {valid: true/false, brokenBlock: idx or null}
+//   2. For each block, recompute hash from stored fields
+//   3. Compare computed hash with stored hash
+//   4. Verify prev_hash links to previous block
+//   5. Return {valid: true/false, brokenBlock: idx or null}
 ```
 
 ### 3. Trust Score Functions
@@ -124,16 +149,19 @@
 ### 5. Authentication Functions
 ```javascript
 // authenticateDevice(supabase, device_id, timestamp, nonce, hmac)
-//   1. Fetch device secret_hash and trust_score
-//   2. Check device not revoked
-//   3. Verify timestamp (max 60s old)
+//   1. Fetch device (secret_hash, trust_score, status)
+//   2. Check status === 'active'
+//   3. Verify timestamp freshness (max 60s old)
 //   4. Check nonce not used (prevent replay)
-//   5. Compute expected HMAC
+//   5. Compute expected HMAC using secret_hash as key
+//      - HMAC = HMAC-SHA256(secret_hash, device_id + timestamp + nonce)
 //   6. Compare with provided HMAC
-//   7. Update trust score
-//   8. Log to blockchain (AUTH_SUCCESS or AUTH_FAIL)
-//   9. Insert nonce
-//   10. Return {success, trust_score, token (if success)}
+//   7. Count recent auths (last 60s) for burst detection
+//   8. Update trust score based on result
+//   9. Log to blockchain (AUTH_SUCCESS or AUTH_FAIL)
+//   10. Insert nonce with epoch ms timestamp
+//   11. Check if trust < 20 → set status = 'blocked'
+//   12. Return {success, trust_score, token (if success)}
 ```
 
 ## API Endpoints
@@ -174,11 +202,11 @@
 3. Return success
 
 ### GET /api/devices
-**Response**: `{devices: [{device_id, trust_score, is_revoked, created_at}]}`  
+**Response**: `{devices: [{device_id, trust_score, status, created_at}]}`  
 **Logic**: Query devices table
 
 ### GET /api/ledger
-**Response**: `{blocks: [{idx, timestamp, event, device_id, data, hash}]}`  
+**Response**: `{blocks: [{idx, ts, event, device_id, data, hash}]}`  
 **Logic**: Query blockchain ordered by idx DESC
 
 ### GET /api/integrity
@@ -244,30 +272,45 @@
 ```
 Browser → POST /api/register
   ↓
-Generate device_id, secret
+Generate device_id (16 bytes), secret (32 bytes)
   ↓
-Hash secret → store in devices
+Compute secret_hash = SHA256(secret)
   ↓
-Add REGISTER block to blockchain
+Store in devices table (secret_hash, trust=50, status='active')
   ↓
-Return {device_id, secret}
+Add REGISTER block to blockchain (with epoch ms)
+  ↓
+Return {device_id, secret} to client
+Note: Device will use SHA256(secret) as HMAC key = secret_hash
 ```
 
 ### Authentication Flow
 ```
-Device → POST /api/auth {device_id, ts, nonce, hmac}
+Device computes:
+  key = SHA256(secret)  // This equals server's secret_hash
+  hmac = HMAC-SHA256(key, device_id + timestamp + nonce)
+
+Device → POST /api/auth {device_id, timestamp, nonce, hmac}
   ↓
-Verify timestamp (<60s old)
+Server validates timestamp (<60s old, epoch ms)
   ↓
-Check nonce not used
+Check nonce not used in nonces table
   ↓
-Verify HMAC signature
+Fetch device secret_hash from database
+  ↓
+Compute expected_hmac = HMAC-SHA256(secret_hash, device_id + timestamp + nonce)
+  ↓
+Compare hmac === expected_hmac
   ↓
 Update trust score (+5 or -15)
   ↓
 Check burst (>5 auth/min → -10)
   ↓
-Add AUTH_SUCCESS/FAIL block
+Add block with epoch ms timestamp
+  ↓
+Insert nonce with epoch ms used_at
+  ↓
+If trust < 20: set status = 'blocked'
   ↓
 If success: Issue token with dynamic lifetime
   ↓
@@ -280,11 +323,15 @@ Client → POST /api/verify {token}
   ↓
 Parse token (payload.signature)
   ↓
-Verify HMAC signature
+Extract device_id from payload
   ↓
-Check expiry timestamp
+Fetch device secret_hash and status
   ↓
-Check device not revoked
+Verify HMAC signature using secret_hash
+  ↓
+Check expiry timestamp (epoch seconds)
+  ↓
+Check status === 'active'
   ↓
 Return {valid, device_id, trust}
 ```
