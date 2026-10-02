@@ -175,6 +175,32 @@ export default function Dashboard() {
     }
   };
 
+  const viewSecrets = () => {
+    if (Object.keys(secrets).length === 0) {
+      return alert('No secrets stored. Register a device first.');
+    }
+    let msg = 'Stored Device Secrets:\n\n';
+    Object.entries(secrets).forEach(([deviceId, secret]) => {
+      msg += `Device: ${deviceId}\nSecret: ${secret}\n\n`;
+    });
+    alert(msg);
+  };
+
+  const exportSecrets = () => {
+    if (Object.keys(secrets).length === 0) {
+      return alert('No secrets to export.');
+    }
+    const data = JSON.stringify(secrets, null, 2);
+    const blob = new Blob([data], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `device-secrets-${Date.now()}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    alert('Secrets exported! Check your Downloads folder.');
+  };
+
   return (
     <div style={styles.container}>
       {/* Hero Section */}
@@ -244,6 +270,14 @@ export default function Dashboard() {
             <span style={styles.actionIcon}>⚡</span>
             <span style={styles.actionText}>Tamper Block</span>
           </button>
+          <button onClick={viewSecrets} style={styles.actionBtn}>
+            <span style={styles.actionIcon}>🔑</span>
+            <span style={styles.actionText}>View Secrets</span>
+          </button>
+          <button onClick={exportSecrets} style={styles.actionBtn}>
+            <span style={styles.actionIcon}>💾</span>
+            <span style={styles.actionText}>Export Secrets</span>
+          </button>
           <button onClick={reset} style={styles.actionBtn}>
             <span style={styles.actionIcon}>↻</span>
             <span style={styles.actionText}>Reset System</span>
@@ -254,6 +288,34 @@ export default function Dashboard() {
       {/* Devices Table */}
       <section style={styles.section}>
         <h2 style={styles.sectionTitle}>Registered Devices</h2>
+        
+        {/* Secrets Info Panel */}
+        {Object.keys(secrets).length > 0 && (
+          <div style={styles.secretsPanel}>
+            <div style={styles.secretsHeader}>
+              <span style={styles.secretsTitle}>🔑 Stored Secrets ({Object.keys(secrets).length})</span>
+              <div style={{display: 'flex', gap: '8px'}}>
+                <button onClick={viewSecrets} style={styles.smallBtn}>View All</button>
+                <button onClick={exportSecrets} style={styles.smallBtn}>Export</button>
+              </div>
+            </div>
+            <div style={styles.secretsList}>
+              {Object.entries(secrets).slice(0, 3).map(([deviceId, secret]) => (
+                <div key={deviceId} style={styles.secretItem}>
+                  <code style={styles.secretCode}>
+                    {deviceId}: {secret.slice(0, 16)}...
+                  </code>
+                </div>
+              ))}
+              {Object.keys(secrets).length > 3 && (
+                <div style={styles.secretMore}>
+                  +{Object.keys(secrets).length - 3} more secrets
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
         <div style={styles.tableContainer}>
           <table style={styles.table}>
             <thead>
@@ -634,5 +696,57 @@ const styles = {
     fontSize: '13px',
     color: '#B8A4FF',
     wordBreak: 'break-all',
+  },
+  secretsPanel: {
+    background: '#0A0A0A',
+    border: '1px solid #252525',
+    borderRadius: '12px',
+    padding: '16px',
+    marginBottom: '24px',
+  },
+  secretsHeader: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: '12px',
+  },
+  secretsTitle: {
+    fontSize: '16px',
+    fontWeight: '600',
+    color: '#F7F7F7',
+  },
+  smallBtn: {
+    background: 'transparent',
+    border: '1px solid #444',
+    borderRadius: '6px',
+    padding: '6px 12px',
+    color: '#F7F7F7',
+    fontSize: '13px',
+    fontWeight: '600',
+    cursor: 'pointer',
+  },
+  secretsList: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '8px',
+  },
+  secretItem: {
+    background: '#000000',
+    padding: '8px 12px',
+    borderRadius: '6px',
+    border: '1px solid #1A1A1A',
+  },
+  secretCode: {
+    fontFamily: 'monospace',
+    fontSize: '12px',
+    color: '#8A5CF6',
+    wordBreak: 'break-all',
+  },
+  secretMore: {
+    fontSize: '13px',
+    color: '#A7A7A7',
+    fontStyle: 'italic',
+    textAlign: 'center',
+    padding: '8px',
   },
 };
