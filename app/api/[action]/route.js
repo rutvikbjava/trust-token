@@ -53,7 +53,7 @@ export async function POST(req, { params }) {
       if (dev.status !== 'active') return Response.json({ error: 'Device inactive' }, { status: 403 });
       if (Math.abs(Date.now() - ts) > 60000) return Response.json({ error: 'Stale timestamp' }, { status: 400 });
       
-      const { data: used } = await db.from('nonces').select('nonce').eq('nonce', nonce).single();
+      const { data: used } = await db.from('nonces').select('nonce').eq('device_id', device_id).eq('nonce', nonce).single();
       if (used) return Response.json({ error: 'Replay detected' }, { status: 400 });
       
       const expected = crypto.createHmac('sha256', dev.secret_hash).update(`${device_id}${ts}${nonce}`).digest('hex');
@@ -63,7 +63,7 @@ export async function POST(req, { params }) {
         return Response.json({ error: 'Invalid signature' }, { status: 401 });
       }
 
-      const { error: e2 } = await db.from('nonces').insert({ nonce, ts, device_id });
+      const { error: e2 } = await db.from('nonces').insert({ device_id, nonce });
       if (e2) throw new Error(e2.message);
       
       const { data: recent } = await db.from('blockchain').select('idx').eq('device_id', device_id)
