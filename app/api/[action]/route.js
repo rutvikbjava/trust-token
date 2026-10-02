@@ -5,15 +5,31 @@ export const dynamic = 'force-dynamic';
 
 export async function POST(req, { params }) {
   const { action } = params;
-  const body = await req.json().catch(() => ({}));
+  let body = {};
+  
+  try {
+    body = await req.json().catch(() => ({}));
+  } catch (parseError) {
+    console.error('JSON parse error:', parseError);
+    return Response.json({ error: 'Invalid JSON' }, { status: 400 });
+  }
 
   try {
+    // Validate environment variables
+    if (!process.env.NEXT_PUBLIC_SUPABASE_URL && !process.env.SUPABASE_URL) {
+      console.error('Missing SUPABASE_URL');
+      return Response.json({ error: 'Server configuration error: Missing SUPABASE_URL' }, { status: 500 });
+    }
+    if (!process.env.SUPABASE_SERVICE_KEY) {
+      console.error('Missing SUPABASE_SERVICE_KEY');
+      return Response.json({ error: 'Server configuration error: Missing SUPABASE_SERVICE_KEY' }, { status: 500 });
+    }
+
     // REGISTER
     if (action === 'register') {
       const device_id = crypto.randomBytes(8).toString('hex');
       const secret = crypto.randomBytes(16).toString('hex');
       const secret_hash = crypto.createHash('sha256').update(secret).digest('hex');
-      // NOTE: Storing raw secret_hash for HMAC demo. Production should use hardware-backed keys.
       const { error } = await db.from('devices').insert({ device_id, secret_hash, trust_score: 50 });
       if (error) throw new Error(error.message);
       await addBlock('REGISTER', device_id, { trust_score: 50 });
@@ -23,8 +39,17 @@ export async function POST(req, { params }) {
     // AUTH
     if (action === 'auth') {
       const { device_id, ts, nonce, sig } = body;
+      
+      if (!device_id || !ts || !nonce || !sig) {
+        console.error('Missing auth parameters:', { device_id: !!device_id, ts: !!ts, nonce: !!nonce, sig: !!sig });
+        return Response.json({ error: 'Missing parameters' }, { status: 400 });
+      }
+      
       const { data: dev, error: e1 } = await db.from('devices').select('*').eq('device_id', device_id).single();
-      if (e1 || !dev) return Response.json({ error: 'Device not found' }, { status: 404 });
+      if (e1 || !dev) {
+        console.error('Device not found:', device_id, e1?.message);
+        return Response.json({ error: 'Device not found' }, { status: 404 });
+      }
       if (dev.status !== 'active') return Response.json({ error: 'Device inactive' }, { status: 403 });
       if (Math.abs(Date.now() - ts) > 60000) return Response.json({ error: 'Stale timestamp' }, { status: 400 });
       
@@ -41,12 +66,11 @@ export async function POST(req, { params }) {
       const { error: e2 } = await db.from('nonces').insert({ nonce, ts, device_id });
       if (e2) throw new Error(e2.message);
       
-      // Check burst: count AUTH blocks in last 60s
       const { data: recent } = await db.from('blockchain').select('idx').eq('device_id', device_id)
         .in('event', ['AUTH_SUCCESS', 'AUTH_FAIL']).gte('ts', Date.now() - 60000);
       const burst = recent && recent.length > 5;
       
-      const trust = await updateTrust(device_id, burst ? -5 : 5); // +5 base, -10 if burst
+      const trust = await updateTrust(device_id, burst ? -5 : 5);
       await addBlock('AUTH_SUCCESS', device_id, { trust_score: trust, burst });
       
       const ttl = ttlFor(trust);
@@ -102,7 +126,17 @@ export async function POST(req, { params }) {
 
     return Response.json({ error: 'Unknown action' }, { status: 404 });
   } catch (err) {
-    return Response.json({ error: err.message }, { status: 500 });
+    console.error('POST API Error:', {
+      action,
+      error: err.message,
+      stack: err.stack,
+      body: JSON.stringify(body)
+    });
+    return Response.json({ 
+      error: err.message, 
+      action,
+      timestamp: new Date().toISOString()
+    }, { status: 500 });
   }
 }
 
@@ -127,6 +161,15 @@ export async function GET(req, { params }) {
 
     return Response.json({ error: 'Unknown action' }, { status: 404 });
   } catch (err) {
-    return Response.json({ error: err.message }, { status: 500 });
+    console.error('GET API Error:', {
+      action,
+      error: err.message,
+      stack: err.stack
+    });
+    return Response.json({ 
+      error: err.message,
+      action,
+      timestamp: new Date().toISOString()
+    }, { status: 500 });
   }
 }
