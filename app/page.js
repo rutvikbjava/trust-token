@@ -22,6 +22,25 @@ export default function Dashboard() {
   const [token, setToken] = useState('');
   const [verifyResult, setVerifyResult] = useState(null);
   const [secrets, setSecrets] = useState({});
+
+  // Load secrets from localStorage on mount
+  useEffect(() => {
+    const saved = localStorage.getItem('device_secrets');
+    if (saved) {
+      try {
+        setSecrets(JSON.parse(saved));
+      } catch (e) {
+        console.error('Failed to load secrets:', e);
+      }
+    }
+  }, []);
+
+  // Save secrets to localStorage whenever they change
+  useEffect(() => {
+    if (Object.keys(secrets).length > 0) {
+      localStorage.setItem('device_secrets', JSON.stringify(secrets));
+    }
+  }, [secrets]);
   const [stats, setStats] = useState({ totalDevices: 0, totalBlocks: 0, activeDevices: 0 });
   const [isMobile, setIsMobile] = useState(false);
 
@@ -74,8 +93,17 @@ export default function Dashboard() {
   };
 
   const simulate = async (mode, badSig = false) => {
-    const id = prompt('Device ID:');
-    if (!id || !secrets[id]) return alert('Device not found or secret missing');
+    let id = prompt('Device ID:');
+    if (!id) return;
+    
+    // If secret is missing, ask for it
+    if (!secrets[id]) {
+      const secret = prompt(`Secret for device ${id}:\n(Find it in the alert when you registered)`);
+      if (!secret) return alert('Secret is required');
+      setSecrets({ ...secrets, [id]: secret });
+      return alert('Secret saved! Click the button again to authenticate.');
+    }
+    
     try {
       for (let i = 0; i < (mode === 'good' ? 3 : 5); i++) {
         let authData;
@@ -143,6 +171,7 @@ export default function Dashboard() {
     if (confirm('Delete all data?')) {
       await fetch('/api/reset', { method: 'POST' });
       setSecrets({});
+      localStorage.removeItem('device_secrets');
     }
   };
 
