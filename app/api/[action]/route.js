@@ -1,5 +1,7 @@
-const crypto = require('crypto');
-const { db, addBlock, verifyChain, sign, verifyToken, updateTrust, ttlFor } = require('../../../lib/core');
+import crypto from 'crypto';
+import { db, addBlock, verifyChain, sign, verifyToken, updateTrust, ttlFor } from '../../../lib/core.js';
+
+export const dynamic = 'force-dynamic';
 
 export async function POST(req, { params }) {
   const { action } = params;
